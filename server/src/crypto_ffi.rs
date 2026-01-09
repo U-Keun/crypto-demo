@@ -207,10 +207,12 @@ impl Drop for CryptoProvider {
     }
 }
 
-// Not implementing Send/Sync initially (using Arc<Mutex<>> wrapper for thread-safety)
-// After verifying provider is re-entrant, we can add:
-// unsafe impl Send for CryptoProvider {}
-// unsafe impl Sync for CryptoProvider {}
+// Safety: The CryptoProvider uses an opaque handle from C that manages its own state.
+// Each encryption/decryption call is independent and the C provider implementation
+// using OpenSSL EVP_CIPHER_CTX (which is created fresh for each operation) is thread-safe.
+// The raw pointer is never dereferenced in Rust, only passed to C functions.
+unsafe impl Send for CryptoProvider {}
+unsafe impl Sync for CryptoProvider {}
 
 /// Result of encryption operation
 #[derive(Debug, Clone)]
