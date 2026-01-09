@@ -1,10 +1,14 @@
 use crate::crypto_ffi::{CryptoProvider, CRYPTO_KEY_SIZE, CRYPTO_NONCE_SIZE, CRYPTO_TAG_SIZE};
-use crate::model::{DecryptRequest, DecryptResponse, EncryptRequest, EncryptResponse, ErrorResponse};
+use crate::db::{Database, NewUser};
+use crate::model::{
+    CreateUserRequest, CreateUserResponse, DecryptRequest, DecryptResponse, EncryptRequest,
+    EncryptResponse, ErrorResponse, GetUserResponse,
+};
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use std::sync::{Arc, Mutex};
@@ -13,14 +17,16 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 pub struct AppState {
     pub provider: Arc<Mutex<CryptoProvider>>,
+    pub db: Database,
 }
 
 impl AppState {
-    /// Create new application state with a crypto provider
-    pub fn new(key: &[u8; CRYPTO_KEY_SIZE]) -> Result<Self, String> {
+    /// Create new application state with a crypto provider and database
+    pub fn new(key: &[u8; CRYPTO_KEY_SIZE], db: Database) -> Result<Self, String> {
         let provider = CryptoProvider::new(key).map_err(|e| e.to_string())?;
         Ok(Self {
             provider: Arc::new(Mutex::new(provider)),
+            db,
         })
     }
 }
@@ -30,6 +36,8 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/encrypt", post(encrypt_handler))
         .route("/decrypt", post(decrypt_handler))
+        .route("/users", post(create_user_handler))
+        .route("/users/:id", get(get_user_handler))
         .with_state(state)
 }
 
@@ -129,10 +137,101 @@ async fn decrypt_handler(
     Ok(Json(response))
 }
 
+/// POST /users - Create a new user with encrypted phone
+async fn create_user_handler(
+    State(state): State<AppState>,
+    Json(req): Json<CreateUserRequest>,
+) -> Result<Json<CreateUserResponse>, AppError> {
+    // Encrypt phone number
+    let phone_bytes = req.phone.as_bytes();
+    let aad = format!("table=users;field=phone;name={}", req.name);
+
+    let provider = state.provider.lock().unwrap();
+    let result = provider
+        .encrypt(phone_bytes, Some(aad.as_bytes()))
+        .map_err(|e| AppError::Internal(format!("Encryption failed: {}", e)))?;
+    drop(provider);
+
+    // Store in database
+    let new_user = NewUser {
+        name: req.name.clone(),
+        phone_enc: result.ciphertext,
+        phone_nonce: result.nonce.to_vec(),
+        phone_tag: result.tag.to_vec(),
+        phone_keyver: 1,
+        phone_plaintext: phone_bytes.to_vec(),
+    };
+
+    let user_id = state
+        .db
+        .insert_user(new_user)
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+    // Fetch the created user to get created_at
+    let user = state
+        .db
+        .get_user(user_id)
+        .map_err(|e| AppError::Internal(format!("Database error: {}", e)))?;
+
+    Ok(Json(CreateUserResponse {
+        id: user.id,
+        name: user.name,
+        created_at: user.created_at,
+    }))
+}
+
+/// GET /users/{id} - Get user by ID with decrypted phone
+async fn get_user_handler(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<GetUserResponse>, AppError> {
+    // Fetch user from database
+    let user = state
+        .db
+        .get_user(id)
+        .map_err(|e| match e {
+            crate::db::DbError::NotFound => AppError::NotFound(format!("User {} not found", id)),
+            _ => AppError::Internal(format!("Database error: {}", e)),
+        })?;
+
+    // Decrypt phone number
+    let aad = format!("table=users;field=phone;name={}", user.name);
+
+    // Convert to fixed-size arrays
+    if user.phone_nonce.len() != CRYPTO_NONCE_SIZE {
+        return Err(AppError::Internal("Invalid nonce size in database".into()));
+    }
+    if user.phone_tag.len() != CRYPTO_TAG_SIZE {
+        return Err(AppError::Internal("Invalid tag size in database".into()));
+    }
+
+    let mut nonce = [0u8; CRYPTO_NONCE_SIZE];
+    let mut tag = [0u8; CRYPTO_TAG_SIZE];
+    nonce.copy_from_slice(&user.phone_nonce);
+    tag.copy_from_slice(&user.phone_tag);
+
+    let provider = state.provider.lock().unwrap();
+    let phone_bytes = provider
+        .decrypt(&user.phone_enc, &nonce, &tag, Some(aad.as_bytes()))
+        .map_err(|e| AppError::CryptoError(format!("Decryption failed: {}", e)))?;
+    drop(provider);
+
+    let phone = String::from_utf8(phone_bytes)
+        .map_err(|e| AppError::Internal(format!("Invalid UTF-8 in decrypted phone: {}", e)))?;
+
+    Ok(Json(GetUserResponse {
+        id: user.id,
+        name: user.name,
+        phone,
+        created_at: user.created_at,
+    }))
+}
+
 /// Application errors
 #[derive(Debug)]
 enum AppError {
     BadRequest(String),
+    NotFound(String),
     CryptoError(String),
     Internal(String),
 }
@@ -141,6 +240,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, error_message) = match self {
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             AppError::CryptoError(msg) => (StatusCode::UNPROCESSABLE_ENTITY, msg),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };

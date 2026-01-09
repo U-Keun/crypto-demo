@@ -1,9 +1,11 @@
 mod api;
 mod crypto_ffi;
+mod db;
 mod model;
 
 use api::{create_router, AppState};
 use crypto_ffi::CRYPTO_KEY_SIZE;
+use db::Database;
 use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -21,8 +23,15 @@ async fn main() {
     // Create encryption key (MVP: hardcoded key, production should use key management)
     let key = [0x42u8; CRYPTO_KEY_SIZE];
 
+    // Create HMAC key for search tokens (MVP: same as encryption key)
+    let hmac_key = key;
+
+    // Initialize database
+    let db = Database::new("crypto_demo.db", &hmac_key).expect("Failed to initialize database");
+    tracing::info!("Database initialized: crypto_demo.db");
+
     // Initialize application state
-    let state = AppState::new(&key).expect("Failed to create application state");
+    let state = AppState::new(&key, db).expect("Failed to create application state");
 
     // Create router
     let app = create_router(state);
@@ -40,6 +49,8 @@ async fn main() {
     tracing::info!("Endpoints:");
     tracing::info!("  POST http://{}/encrypt", addr);
     tracing::info!("  POST http://{}/decrypt", addr);
+    tracing::info!("  POST http://{}/users", addr);
+    tracing::info!("  GET  http://{}/users/{{id}}", addr);
 
     axum::serve(listener, app)
         .await

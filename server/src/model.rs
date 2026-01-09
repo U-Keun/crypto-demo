@@ -69,3 +69,29 @@ impl ErrorResponse {
         }
     }
 }
+
+// ===== User Endpoints =====
+
+/// Request for POST /users
+#[derive(Debug, Deserialize)]
+pub struct CreateUserRequest {
+    pub name: String,
+    pub phone: String,
+}
+
+/// Response from POST /users
+#[derive(Debug, Serialize)]
+pub struct CreateUserResponse {
+    pub id: i64,
+    pub name: String,
+    pub created_at: String,
+}
+
+/// Response from GET /users/{id}
+#[derive(Debug, Serialize)]
+pub struct GetUserResponse {
+    pub id: i64,
+    pub name: String,
+    pub phone: String,
+    pub created_at: String,
+}
