@@ -1,0 +1,52 @@
+# Rust
+target/
+Cargo.lock
+
+# C/CMake build artifacts
+provider/build/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.vim/
+*.code-workspace
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log
+
+# Database files (development)
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Backup files
+*.bak
+*.orig
