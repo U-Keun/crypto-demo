@@ -120,11 +120,15 @@ cargo test
 - [x] AAD 컨텍스트 바인딩 (table/field/name)
 - [x] 404 에러 핸들링
 
+### ✅ 추가 완료
+
+- [x] 문서 작성 (ARCHITECTURE.md, THREAT_MODEL.md, BENCHMARK.md)
+
 ### 📋 향후 계획
 
-- [ ] 성능 벤치마크 (32B ~ 1MB 페이로드)
+- [ ] 실제 성능 벤치마크 측정 (Criterion 프레임워크)
 - [ ] 검색 토큰 기반 정확 일치 쿼리 (`find_user_by_phone`)
-- [ ] 문서 작성 (ARCHITECTURE.md, THREAT_MODEL.md)
+- [ ] Release 빌드 최적화 검증
 - [ ] (Optional) dlopen 기반 provider 동적 로딩
 
 ## Provider API 개요
