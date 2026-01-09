@@ -92,7 +92,7 @@ cargo test
 
 ## 현재 구현 상태
 
-### ✅ 완료 (Phase 1)
+### ✅ Phase 1 완료: C Provider + FFI
 
 - [x] C provider 헤더 정의 (`crypto_provider.h`)
 - [x] OpenSSL 기반 AES-256-GCM 구현 (`crypto_provider_openssl.c`)
@@ -101,21 +101,31 @@ cargo test
 - [x] 기본 테스트 스위트 (7개 테스트)
 - [x] 스모크 테스트 (encrypt → decrypt 라운드트립)
 
-### 🚧 진행 예정 (Phase 2)
+### ✅ Phase 2 완료: REST API
 
-- [ ] Axum 기반 REST API 서버
-- [ ] `/encrypt` 엔드포인트
-- [ ] `/decrypt` 엔드포인트
-- [ ] Base64 인코딩 DTO
+- [x] Axum 기반 REST API 서버
+- [x] `POST /encrypt` 엔드포인트
+- [x] `POST /decrypt` 엔드포인트
+- [x] Base64 인코딩 DTO
+- [x] AAD/Tag 변조 감지
+- [x] Thread-safe CryptoProvider (Send + Sync)
 
-### 📋 계획 (Phase 3+)
+### ✅ Phase 3 완료: SQLite DB 연동
 
-- [ ] SQLite DB 연동
-- [ ] `/users` CRUD 엔드포인트
-- [ ] 컬럼 암호화 저장
-- [ ] HMAC 기반 검색 토큰
-- [ ] 성능 벤치마크
-- [ ] 동시성 최적화
+- [x] SQLite DB 초기화 및 스키마
+- [x] `POST /users` 엔드포인트 (암호화 저장)
+- [x] `GET /users/{id}` 엔드포인트 (복호화 반환)
+- [x] 컬럼 암호화 저장 (phone_enc, phone_nonce, phone_tag)
+- [x] HMAC 기반 검색 토큰 생성
+- [x] AAD 컨텍스트 바인딩 (table/field/name)
+- [x] 404 에러 핸들링
+
+### 📋 향후 계획
+
+- [ ] 성능 벤치마크 (32B ~ 1MB 페이로드)
+- [ ] 검색 토큰 기반 정확 일치 쿼리 (`find_user_by_phone`)
+- [ ] 문서 작성 (ARCHITECTURE.md, THREAT_MODEL.md)
+- [ ] (Optional) dlopen 기반 provider 동적 로딩
 
 ## Provider API 개요
 
@@ -176,28 +186,84 @@ table=users;field=phone;id=123;keyver=1
 
 ## 실행 예제
 
+### API 서버 실행
+
 ```bash
 $ export DYLD_LIBRARY_PATH="$(pwd)/provider/build:$DYLD_LIBRARY_PATH"
 $ cargo run
 
-Crypto Provider Demo
-====================
-ABI Version: 1
-✓ Provider created successfully
+2026-01-09T04:15:45Z INFO server: Database initialized: crypto_demo.db
+2026-01-09T04:15:45Z INFO server: Starting server on 127.0.0.1:3000
+2026-01-09T04:15:45Z INFO server: Server listening on 127.0.0.1:3000
+2026-01-09T04:15:45Z INFO server: Endpoints:
+2026-01-09T04:15:45Z INFO server:   POST http://127.0.0.1:3000/encrypt
+2026-01-09T04:15:45Z INFO server:   POST http://127.0.0.1:3000/decrypt
+2026-01-09T04:15:45Z INFO server:   POST http://127.0.0.1:3000/users
+2026-01-09T04:15:45Z INFO server:   GET  http://127.0.0.1:3000/users/{id}
+```
 
-Encryption Test:
-  Plaintext: "Hello, Crypto World!"
-✓ Encryption successful
-  Nonce length: 12
-  Ciphertext length: 20
-  Tag length: 16
+### API 사용 예제
 
-Decryption Test:
-✓ Decryption successful
-  Decrypted: "Hello, Crypto World!"
-✓ Round-trip successful: plaintext matches!
+**1. 사용자 생성 (암호화 저장)**
+```bash
+$ curl -X POST http://127.0.0.1:3000/users \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Alice","phone":"010-1234-5678"}'
 
-✓ All smoke tests passed!
+{
+  "id": 1,
+  "name": "Alice",
+  "created_at": "2026-01-09T04:16:08.509025+00:00"
+}
+```
+
+**2. 사용자 조회 (복호화 반환)**
+```bash
+$ curl http://127.0.0.1:3000/users/1
+
+{
+  "id": 1,
+  "name": "Alice",
+  "phone": "010-1234-5678",
+  "created_at": "2026-01-09T04:16:08.509025+00:00"
+}
+```
+
+**3. DB 직접 확인 (전화번호 암호화 검증)**
+```bash
+$ sqlite3 crypto_demo.db "SELECT id, name, hex(phone_enc), hex(phone_tag) FROM users;"
+
+1|Alice|A51B1A5254735426F06EC6BDB8|A069A1290CA6328D2FCCA4B99876D040
+```
+
+**4. 암복호화 직접 호출**
+```bash
+# 암호화
+$ curl -X POST http://127.0.0.1:3000/encrypt \
+  -H 'Content-Type: application/json' \
+  -d '{"plaintext_b64":"SGVsbG8sIFdvcmxkIQ==","aad":"context"}'
+
+{
+  "keyver": 1,
+  "nonce_b64": "a34wEqOl2d1usAkd",
+  "ciphertext_b64": "V+hsfwR94XpkIHYe6g==",
+  "tag_b64": "LV7HxwzGGvoBXNFLVPiMbA=="
+}
+
+# 복호화
+$ curl -X POST http://127.0.0.1:3000/decrypt \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "keyver":1,
+    "nonce_b64":"a34wEqOl2d1usAkd",
+    "ciphertext_b64":"V+hsfwR94XpkIHYe6g==",
+    "tag_b64":"LV7HxwzGGvoBXNFLVPiMbA==",
+    "aad":"context"
+  }'
+
+{
+  "plaintext_b64": "SGVsbG8sIFdvcmxkIQ=="  # "Hello, World!"
+}
 ```
 
 ## 테스트 결과
